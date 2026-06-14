@@ -139,7 +139,7 @@ body{font-family:'DM Sans',system-ui,sans-serif;background:var(--bg);color:var(-
 <body>
 <div id="app"></div>
 <script>
-var TMDB_KEY="8265bd1679663a7ea12ac168da84d2e8";
+var TMDB_KEY="705c91ec231b594b8c6fa21665e801a7";
 var TMDB_BASE="https://api.themoviedb.org/3";
 var IMG="https://image.tmdb.org/t/p";
 
@@ -196,30 +196,89 @@ var SRC = [
 var GENRES=[{id:28,n:"Action"},{id:35,n:"Comedy"},{id:18,n:"Drama"},{id:27,n:"Horror"},{id:878,n:"Sci-Fi"},{id:10749,n:"Romance"},{id:16,n:"Animation"},{id:53,n:"Thriller"},{id:14,n:"Fantasy"},{id:99,n:"Documentary"}];
 
 // STATE
-var S={page:"home",trending:[],popular:[],topRated:[],nowPlaying:[],anime:[],loading:true,movie:null,cast:[],similar:[],heroIdx:0,genre:null,genreMovies:[],q:"",results:[],searching:false,toast:null,toastTimer:null};
+var S={page:"home",trending:[],popular:[],topRated:[],nowPlaying:[],anime:[],loading:true,movie:null,cast:[],similar:[],heroIdx:0,genre:null,genreMovies:[],q:"",results:[],searching:false,searchErr:false,toast:null,toastTimer:null};
 
 function setState(p){if(typeof p==="function")p=p(S);Object.assign(S,p);draw();}
 
-// API
+// API — with automatic proxy fallback for blocked networks (India/ISP issues)
 var _c={};
+// Free CORS proxies — tried in order if direct call fails
+var PROXIES=[
+  "",                                          // direct (no proxy)
+  "https://corsproxy.io/?",                   // proxy 1
+  "https://api.allorigins.win/raw?url=",      // proxy 2
+  "https://thingproxy.freeboard.io/fetch/"    // proxy 3
+];
+var _proxyIdx=0; // which proxy is currently working
+
 function apiGet(ep,params,cb){
-  var url=new URL(TMDB_BASE+ep);
-  url.searchParams.set("api_key",TMDB_KEY);
-  if(params)Object.keys(params).forEach(function(k){url.searchParams.set(k,params[k]);});
-  var key=url.toString();
-  if(_c[key]){cb(null,_c[key]);return;}
-  fetch(key).then(function(r){if(!r.ok)throw new Error(r.status);return r.json();}).then(function(d){_c[key]=d;cb(null,d);}).catch(function(e){cb(e);});
+  var directUrl=new URL(TMDB_BASE+ep);
+  directUrl.searchParams.set("api_key",TMDB_KEY);
+  if(params)Object.keys(params).forEach(function(k){directUrl.searchParams.set(k,params[k]);});
+  var cacheKey=directUrl.toString();
+  if(_c[cacheKey]){cb(null,_c[cacheKey]);return;}
+
+  function tryFetch(pIdx){
+    var fetchUrl = pIdx===0
+      ? directUrl.toString()
+      : PROXIES[pIdx]+encodeURIComponent(directUrl.toString());
+    fetch(fetchUrl)
+      .then(function(r){if(!r.ok)throw new Error(r.status);return r.json();})
+      .then(function(d){
+        // Cache result and remember which proxy works
+        _c[cacheKey]=d;
+        if(pIdx>0 && _proxyIdx!==pIdx){
+          _proxyIdx=pIdx; // stick with this proxy for all future requests
+        }
+        cb(null,d);
+      })
+      .catch(function(){
+        var next=pIdx+1;
+        if(next<PROXIES.length){
+          tryFetch(next); // try next proxy
+        } else {
+          cb(new Error("All proxies failed"));
+        }
+      });
+  }
+
+  // Start from last known working proxy (or 0 for direct)
+  tryFetch(_proxyIdx);
 }
 
 // BOOT
 function boot(){
-  var done=0,buf={trending:[],popular:[],topRated:[],nowPlaying:[],anime:[]};
-  function tick(){if(++done===5){setState({loading:false,trending:buf.trending,popular:buf.popular,topRated:buf.topRated,nowPlaying:buf.nowPlaying,anime:buf.anime});startHero();}}
-  apiGet("/trending/movie/week",{},function(e,d){if(!e)buf.trending=d.results||[];tick();});
-  apiGet("/movie/popular",{},function(e,d){if(!e)buf.popular=d.results||[];tick();});
-  apiGet("/movie/top_rated",{},function(e,d){if(!e)buf.topRated=d.results||[];tick();});
-  apiGet("/movie/now_playing",{},function(e,d){if(!e)buf.nowPlaying=d.results||[];tick();});
-  apiGet("/discover/tv",{with_genres:"16",sort_by:"popularity.desc"},function(e,d){if(!e)buf.anime=d.results||[];tick();});
+  var done=0,errors=0,buf={trending:[],popular:[],topRated:[],nowPlaying:[],anime:[]};
+  function tick(err){
+    if(err) errors++;
+    done++;
+    if(done===5){
+      if(errors===5){
+        // All 5 requests failed — show network error with retry
+        setState({loading:false});
+        var main=document.getElementById("main");
+        if(main) main.innerHTML='<div style="text-align:center;padding:3rem 1.5rem;color:var(--muted)">'
+          +'<div style="font-size:3rem;margin-bottom:1rem">📡</div>'
+          +'<div style="font-family:Bebas Neue,sans-serif;font-size:1.8rem;color:var(--text);margin-bottom:.5rem">Connection Problem</div>'
+          +'<div style="font-size:13px;line-height:1.7;margin-bottom:1.5rem">Your network is blocking the movie database.<br>This is common on some Indian mobile networks (Jio/Airtel).<br><br>'
+          +'<b style="color:var(--text)">Try these fixes:</b><br>'
+          +'1. Switch from mobile data to WiFi<br>'
+          +'2. Enable a free VPN (ProtonVPN, Windscribe)<br>'
+          +'3. Use Chrome browser instead of Samsung Browser</div>'
+          +'<button onclick="errors=0;done=0;buf={trending:[],popular:[],topRated:[],nowPlaying:[],anime:[]};boot();" '
+          +'style="background:var(--red);color:#fff;border:none;border-radius:8px;padding:12px 28px;font-family:inherit;font-size:14px;font-weight:600;cursor:pointer">↻ Retry</button>'
+          +'</div>';
+        return;
+      }
+      setState({loading:false,trending:buf.trending,popular:buf.popular,topRated:buf.topRated,nowPlaying:buf.nowPlaying,anime:buf.anime});
+      startHero();
+    }
+  }
+  apiGet("/trending/movie/week",{},function(e,d){if(!e)buf.trending=d.results||[];tick(e);});
+  apiGet("/movie/popular",{},function(e,d){if(!e)buf.popular=d.results||[];tick(e);});
+  apiGet("/movie/top_rated",{},function(e,d){if(!e)buf.topRated=d.results||[];tick(e);});
+  apiGet("/movie/now_playing",{},function(e,d){if(!e)buf.nowPlaying=d.results||[];tick(e);});
+  apiGet("/discover/tv",{with_genres:"16",sort_by:"popularity.desc"},function(e,d){if(!e)buf.anime=d.results||[];tick(e);});
 }
 var heroTmr=null;
 function startHero(){clearInterval(heroTmr);heroTmr=setInterval(function(){setState({heroIdx:(S.heroIdx+1)%Math.min(5,S.trending.length||1)});},5500);}
@@ -243,13 +302,13 @@ function loadGenre(id){
 }
 var sTimer=null;
 function doSearch(q){
-  setState({q:q,results:[],searching:!!q.trim()});
+  setState({q:q,results:[],searching:!!q.trim(),searchErr:false});
   clearTimeout(sTimer);
-  if(!q.trim()){setState({searching:false});return;}
+  if(!q.trim()){setState({searching:false,searchErr:false});return;}
   sTimer=setTimeout(function(){
     apiGet("/search/multi",{query:q,include_adult:false},function(e,d){
-      if(e){setState({searching:false});return;}
-      setState({results:(d.results||[]).filter(function(x){return x.poster_path&&(x.media_type==="movie"||x.media_type==="tv");}),searching:false});
+      if(e){setState({searching:false,searchErr:true});return;}
+      setState({results:(d.results||[]).filter(function(x){return x.poster_path&&(x.media_type==="movie"||x.media_type==="tv");}),searching:false,searchErr:false});
     });
   },400);
 }
@@ -400,6 +459,7 @@ function watchHTML(){
 function searchHTML(){
   var body="";
   if(S.searching)body='<div class="grid">'+skels(8)+'</div>';
+  else if(S.searchErr)body='<div class="empty"><div class="empty-i">📡</div><div class="empty-t">Network Error</div><div class="empty-s">Your network is blocking the request.<br>Try WiFi, or enable a VPN (ProtonVPN is free).<br><br><button onclick="doSearch(S.q)" style="background:var(--red);color:#fff;border:none;border-radius:7px;padding:9px 20px;font-family:inherit;font-size:13px;font-weight:600;cursor:pointer;margin-top:8px">↻ Retry</button></div></div>';
   else if(S.results.length)body='<div class="grid">'+S.results.map(cardHTML).join("")+'</div>';
   else if(S.q)body='<div class="empty"><div class="empty-i">🔍</div><div class="empty-t">No Results</div><div class="empty-s">Nothing for "'+esc(S.q)+'"</div></div>';
   else body='<div class="empty"><div class="empty-i">🎬</div><div class="empty-t">Search CineStream</div><div class="empty-s">Movies, TV shows &amp; anime</div></div>';
